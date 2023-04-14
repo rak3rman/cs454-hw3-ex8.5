@@ -2,11 +2,8 @@ import java.util.Objects;
 import java.util.Scanner;
 import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.concurrent.locks.ReadWriteLock;
-import java.util.concurrent.locks.ReentrantReadWriteLock;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 public class Bank {
 
@@ -19,8 +16,8 @@ public class Bank {
 
         private static int id;
         private static int bal = 0;
-        private final ReadWriteLock balLock = new ReentrantReadWriteLock();
-        private final ReentrantLock prefLock = new ReentrantLock();
+        private final ReentrantLock lock = new ReentrantLock();
+        private final Condition canWriteWithdraw = lock.newCondition();
 
         //
         // Constructor
@@ -34,11 +31,11 @@ public class Bank {
         // Output
         //
         public void output(String tid) {
-            balLock.readLock().lock();
+            lock.lock();
             try {
                 System.out.println("(" + tid + ") : Balance = '" + (bal) + "'");
             } finally {
-                balLock.readLock().unlock();
+                lock.unlock();
             }
         }
 
@@ -47,12 +44,12 @@ public class Bank {
         //
         public void deposit(int k, String tid) {
             if (debug) System.out.println("(" + tid + ") : Deposit, acquiring write lock...");
-            balLock.writeLock().lock();
+            lock.lock();
             try {
                 System.out.println("(" + tid + ") : Deposit, got write lock, bal now '" + (bal + k) + "'");
                 bal = bal + k;
             } finally {
-                balLock.writeLock().unlock();
+                lock.unlock();
                 if (debug) System.out.println("(" + tid + ") : Deposit, write lock released");
             }
         }
@@ -61,33 +58,24 @@ public class Bank {
         // Withdraw
         //
         public void withdraw(int k, boolean isPreferred, String tid) {
-            // Loop until we are successful in withdrawing
-            while (true) {
-                // Acquire readLock on bal
-                balLock.readLock().lock();
-                // Determine if (bal - k) will be positive
-                if (bal - k >= 0) {
-                    // (bal - k) should be positive, acquire write lock
-                    if (debug) System.out.println("(" + tid + ") : Withdraw, read looks good, acquiring write lock...");
-                    balLock.readLock().unlock();
-                    balLock.writeLock().lock();
-                    try {
-                        // Has write lock, no other account can read/write
-                        // Determine if (bal - k) will be negative, break if so
-                        if (debug) System.out.println("(" + tid + ") : Withdraw, got write lock, checking bal - k again...");
-                        if (bal - k >= 0) {
-                            // Complete action
-                            System.out.println("(" + tid + ") : Withdraw, bal - k good, bal now '" + (bal - k) + "'");
-                            bal = bal - k;
-                            return;
-                        }
-                    } finally {
-                        balLock.writeLock().unlock();
-                        if (debug) System.out.println("(" + tid + ") : Withdraw, write lock released");
-                    }
-                } else {
-                    balLock.readLock().unlock();
+            lock.lock();
+            try {
+                // Has write lock, no other account can read/write
+                // Determine if (bal - k) will be negative, then check for waiters sleeping with isPreferred
+                if (debug) System.out.println("(" + tid + ") : Withdraw, got write lock, checking bal - k and isPreferred...");
+                while (bal - k < 0 || (isPreferred || lock.hasWaiters(canWriteWithdraw))) {
+                    // Sleep here until signal-ed
+                    canWriteWithdraw.await();
                 }
+                // Complete action
+                System.out.println("(" + tid + ") : Withdraw, bal - k and isPreferred good, bal now '" + (bal - k) + "'");
+                bal = bal - k;
+                canWriteWithdraw.signalAll();
+            } catch (InterruptedException e) {
+                throw new RuntimeException(e);
+            } finally {
+                lock.unlock();
+                if (debug) System.out.println("(" + tid + ") : Withdraw, write lock released");
             }
         }
 
@@ -131,37 +119,29 @@ public class Bank {
         final CyclicBarrier gate = new CyclicBarrier(numAccounts * numThreads + 1);
 
         final Account acc0 = new Account(0, 0);
-        final Account acc1 = new Account(1, 0);
 
         for (int j = 0; j < numThreads; j++) {
             final int finalJ = j;
             new Thread(() -> {
                 // Wait on Gate
-                if (debug) System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, waiting at gate...");
+                System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread primed...");
                 try {
                     gate.await();
                 } catch (InterruptedException | BrokenBarrierException e) {
                     throw new RuntimeException(e);
                 }
-                // Deposit into account 1
+                // Deposit into account 0
                 System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, depositing 100...");
                 acc0.deposit(100, "A0-T" + finalJ);
-                System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, depositing 1...");
-                acc1.deposit(1, "A1-T" + finalJ);
-                // Transfer into account 2 from 1
-                System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, transferring 100...");
-                acc0.transfer(100, acc1, "A0-T" + finalJ);
-                // Withdraw from account 2
+                // Withdraw from account 0
                 System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, withdrawing 100...");
-                acc1.withdraw(90, false, "A1-T" + finalJ);
-                // Print total
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                }
-                acc0.output("A0-T" + finalJ);
-                acc1.output("A1-T" + finalJ);
+                acc0.withdraw(100, false, "A0-T" + finalJ);
+                // Deposit into account 0
+                System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, depositing 100...");
+                acc0.deposit(100, "A0-T" + finalJ);
+                // Withdraw from account 0
+                System.out.println("(A" + 0 + "-T" + finalJ + ") : Thread, withdrawing 100...");
+                acc0.withdraw(100, false, "A0-T" + finalJ);
             }).start();
         }
 
