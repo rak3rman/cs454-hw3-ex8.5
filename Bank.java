@@ -39,7 +39,7 @@ public class Bank {
             if (debug) System.out.println("(" + tid + ") : Deposit, acquiring write lock...");
             lock.lock();
             try {
-                System.out.println("(" + tid + ") : Deposit, got write lock, bal now '" + (bal + k) + "'");
+                System.out.println("(" + tid + ") : Deposit, completed, bal = '" + (bal + k) + "', k = " + k);
                 bal = bal + k;
                 if (lock.hasWaiters(canWritePrefWithdraw)) {
                     canWritePrefWithdraw.signalAll();
@@ -68,7 +68,7 @@ public class Bank {
                     if (debug) System.out.println("(" + tid + ") : Ordinary Withdraw, woke up...");
                 }
                 // Complete action
-                System.out.println("(" + tid + ") : Ordinary Withdraw, completed, bal = " + bal + ", k = " + k);
+                System.out.println("(" + tid + ") : Ordinary Withdraw, completed, bal = '" + (bal - k) + "', k = " + k);
                 bal = bal - k;
                 if (lock.hasWaiters(canWritePrefWithdraw)) {
                     canWritePrefWithdraw.signalAll();
@@ -99,7 +99,7 @@ public class Bank {
                     if (debug) System.out.println("(" + tid + ") : Preferred Withdraw, woke up...");
                 }
                 // Complete action
-                System.out.println("(" + tid + ") : Preferred Withdraw, completed, bal = " + bal + ", k = " + k + ", ord withdraw waiting = " + lock.hasWaiters(canWriteOrdWithdraw));
+                System.out.println("(" + tid + ") : Preferred Withdraw, completed, bal = '" + (bal - k) + "', k = " + k + ", ord withdraw waiting = " + lock.hasWaiters(canWriteOrdWithdraw));
                 bal = bal - k;
                 if (lock.hasWaiters(canWritePrefWithdraw)) {
                     canWritePrefWithdraw.signalAll();
